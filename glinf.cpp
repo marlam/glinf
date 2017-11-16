@@ -32,7 +32,7 @@
 
 int getI(QOpenGLExtraFunctions* gl, GLenum p)
 {
-    GLint v;
+    GLint v = 0;
     gl->glGetIntegerv(p, &v);
     return v;
 }
@@ -68,6 +68,7 @@ int main(int argc, char* argv[])
             return 1;
         }
     }
+    format.setProfile(QSurfaceFormat::CoreProfile);
     if (parser.isSet("profile")) {
         if (parser.value("profile").compare("core", Qt::CaseInsensitive) == 0) {
             format.setProfile(QSurfaceFormat::CoreProfile);
@@ -79,6 +80,10 @@ int main(int argc, char* argv[])
             return 1;
         }
     }
+    int tryMajorMax = 4;
+    int tryMinorMax = 9;
+    int tryMajorMin = 3;
+    int tryMinorMin = 2;
     if (parser.isSet("version")) {
         QStringList majorminor = parser.value("version").split('.');
         unsigned int major, minor;
@@ -91,49 +96,81 @@ int main(int argc, char* argv[])
             fprintf(stderr, "invalid version\n");
             return 1;
         }
-        format.setVersion(major, minor);
+        tryMajorMax = tryMajorMin = major;
+        tryMinorMax = tryMinorMin = minor;
     }
 
     /* Initialize OpenGL context */
-    QSurfaceFormat::setDefaultFormat(format);
-    QOffscreenSurface surface;
-    surface.create();
-    QOpenGLContext context;
-    if (!context.create()) {
+    QOffscreenSurface* surface = nullptr;
+    QOpenGLContext* context = nullptr;
+    int tryMajor = tryMajorMax;
+    int tryMinor = tryMinorMax;
+    bool ok = false;
+    for (;;) {
+        format.setVersion(tryMajor, tryMinor);
+        QSurfaceFormat::setDefaultFormat(format);
+        surface = new QOffscreenSurface;
+        surface->create();
+        context = new QOpenGLContext;
+        ok = context->create();
+        if (ok) {
+            if (context->format().majorVersion() < tryMajor
+                    || (context->format().majorVersion() == tryMajor
+                        && context->format().minorVersion() < tryMinor)) {
+                ok = false;
+            }
+        }
+        if (!ok) {
+            bool tryAgain = false;
+            if (tryMajor > tryMajorMin && tryMinor == 0) {
+                tryMajor--;
+                tryMinor = 9;
+                tryAgain = true;
+            } else if (tryMajor > tryMajorMin || tryMinor > tryMinorMin) {
+                tryMinor--;
+                tryAgain = true;
+            }
+            if (tryAgain) {
+                delete context;
+                context = nullptr;
+                delete surface;
+                surface = nullptr;
+                continue;
+            }
+        }
+        break;
+    }
+    if (!ok) {
         fprintf(stderr, "cannot create context\n");
         return 1;
     }
-    if (!context.makeCurrent(&surface)) {
+    if (!context->makeCurrent(surface)) {
         fprintf(stderr, "cannot make context current\n");
         return 1;
     }
-    QOpenGLExtraFunctions* gl = context.extraFunctions();
+    QOpenGLExtraFunctions* gl = context->extraFunctions();
 
-    /* Print info */
-    QString contextString = context.isOpenGLES() ? "OpenGLES" : "OpenGL";
-    if (!context.isOpenGLES())
-        contextString += QString(", ") + (context.format().profile() == QSurfaceFormat::CompatibilityProfile ? "compatibility" : "core") + " profile";
-    contextString += QString(", version ") + QString::number(context.format().majorVersion()) + '.'
-        + QString::number(context.format().minorVersion());
+    /* Print general info */
+    QString contextString = context->isOpenGLES() ? "OpenGLES" : "OpenGL";
+    contextString += QString(" version ")
+        + QString::number(context->format().majorVersion()) + '.'
+        + QString::number(context->format().minorVersion());
+    if (!context->isOpenGLES()
+            && (context->format().majorVersion() > 3
+                || (context->format().majorVersion() == 3 && context->format().minorVersion() >= 2))) {
+        contextString += QString(" ")
+            + (context->format().profile() == QSurfaceFormat::CompatibilityProfile ? "compatibility" : "core")
+            + " profile";
+    }
     printf("Context:    %s\n", qPrintable(contextString));
     printf("Version:    %s\n", getS(gl, GL_VERSION));
     printf("SL Version: %s\n", getS(gl, GL_SHADING_LANGUAGE_VERSION));
     printf("Vendor:     %s\n", getS(gl, GL_VENDOR));
     printf("Renderer:   %s\n", getS(gl, GL_RENDERER));
-    printf("Limitations:\n");
-    printf("    GL_MAX_ARRAY_TEXTURE_LAYERS: %d\n", getI(gl, GL_MAX_ARRAY_TEXTURE_LAYERS));
-    printf("    GL_MAX_COLOR_ATTACHMENTS: %d\n", getI(gl, GL_MAX_COLOR_ATTACHMENTS));
-    printf("    GL_MAX_COMBINED_ATOMIC_COUNTERS: %d\n", getI(gl, GL_MAX_COMBINED_ATOMIC_COUNTERS));
-    printf("    GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS: %d\n", getI(gl, GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS));
-    printf("    GL_MAX_CUBE_MAP_TEXTURE_SIZE: %d\n", getI(gl, GL_MAX_CUBE_MAP_TEXTURE_SIZE));
-    printf("    GL_MAX_DRAW_BUFFERS: %d\n", getI(gl, GL_MAX_DRAW_BUFFERS));
-    printf("    GL_MAX_ELEMENTS_INDICES: %d\n", getI(gl, GL_MAX_ELEMENTS_INDICES));
-    printf("    GL_MAX_ELEMENTS_VERTICES: %d\n", getI(gl, GL_MAX_ELEMENTS_VERTICES));
-    printf("    GL_MAX_FRAMEBUFFER_HEIGHT: %d\n", getI(gl, GL_MAX_FRAMEBUFFER_HEIGHT));
-    printf("    GL_MAX_FRAMEBUFFER_WIDTH: %d\n", getI(gl, GL_MAX_FRAMEBUFFER_WIDTH));
-    printf("    GL_MAX_TEXTURE_SIZE: %d\n", getI(gl, GL_MAX_TEXTURE_SIZE));
+
+    /* Print extensions */
     if (parser.isSet("extensions")) {
-        QSet<QByteArray> extensions = context.extensions();
+        QSet<QByteArray> extensions = context->extensions();
         QList<QByteArray> sortedExtensions;
         foreach (const QByteArray& ext, extensions)
             if (ext.size() > 0)
@@ -143,6 +180,48 @@ int main(int argc, char* argv[])
         foreach (const QByteArray& ext, sortedExtensions)
             printf("    %s\n", ext.constData());
     }
+
+    /* Print implementation-defined limitations */
+    printf("Resource limitations:\n");
+    printf("  Texture limits:\n");
+    printf("    1D / 2D size: %5d  GL_MAX_TEXTURE_SIZE\n", getI(gl, GL_MAX_TEXTURE_SIZE));
+    printf("    3D size:      %5d  GL_MAX_3D_TEXTURE_SIZE\n", getI(gl, GL_MAX_3D_TEXTURE_SIZE));
+    printf("    Cubemap size: %5d  GL_MAX_CUBE_MAP_TEXTURE_SIZE\n", getI(gl, GL_MAX_CUBE_MAP_TEXTURE_SIZE));
+    printf("    Arr. layers:  %5d  GL_MAX_ARRAY_TEXTURE_LAYERS\n", getI(gl, GL_MAX_ARRAY_TEXTURE_LAYERS));
+    printf("  Framebuffer object limits:\n");
+    printf("    Width:        %5d  GL_MAX_FRAMEBUFFER_WIDTH\n", getI(gl, GL_MAX_FRAMEBUFFER_WIDTH));
+    printf("    Height:       %5d  GL_MAX_FRAMEBUFFER_HEIGHT\n", getI(gl, GL_MAX_FRAMEBUFFER_HEIGHT));
+    printf("    Color Attach.:%5d  GL_MAX_COLOR_ATTACHMENTS\n", getI(gl, GL_MAX_COLOR_ATTACHMENTS));
+    printf("    Draw buffers: %5d  GL_MAX_DRAW_BUFFERS\n", getI(gl, GL_MAX_DRAW_BUFFERS));
+    printf("  Maximum number of uniform components in shader stage:\n");
+    printf("    Vertex:       %5d  GL_MAX_VERTEX_UNIFORM_COMPONENTS\n", getI(gl, GL_MAX_VERTEX_UNIFORM_COMPONENTS));
+    printf("    Tess. Ctrl.:  %5d  GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS\n", getI(gl, GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS));
+    printf("    Tess. Eval.:  %5d  GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS\n", getI(gl, GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS));
+    printf("    Geometry:     %5d  GL_MAX_GEOMETRY_UNIFORM_COMPONENTS\n", getI(gl, GL_MAX_GEOMETRY_UNIFORM_COMPONENTS));
+    printf("    Fragment:     %5d  GL_MAX_FRAGMENT_UNIFORM_COMPONENTS\n", getI(gl, GL_MAX_FRAGMENT_UNIFORM_COMPONENTS));
+    printf("    Compute:      %5d  GL_MAX_COMPUTE_UNIFORM_COMPONENTS\n", getI(gl, GL_MAX_COMPUTE_UNIFORM_COMPONENTS));
+    printf("  Maximum number of input components in shader stage:\n");
+    printf("    Vertex:       %5d  4*GL_MAX_VERTEX_ATTRIBS\n", 4 * getI(gl, GL_MAX_VERTEX_ATTRIBS));
+    printf("    Tess. Ctrl.:  %5d  GL_MAX_TESS_CONTROL_INPUT_COMPONENTS\n", getI(gl, GL_MAX_TESS_CONTROL_INPUT_COMPONENTS));
+    printf("    Tess. Eval.:  %5d  GL_MAX_TESS_EVALUATION_INPUT_COMPONENTS\n", getI(gl, GL_MAX_TESS_EVALUATION_INPUT_COMPONENTS));
+    printf("    Geometry:     %5d  GL_MAX_GEOMETRY_INPUT_COMPONENTS\n", getI(gl, GL_MAX_GEOMETRY_INPUT_COMPONENTS));
+    printf("    Fragment:     %5d  GL_MAX_FRAGMENT_INPUT_COMPONENTS\n", getI(gl, GL_MAX_FRAGMENT_INPUT_COMPONENTS));
+    //printf("    Vert.->Frag.: %5d  GL_MAX_VARYING_COMPONENTS\n", getI(gl, GL_MAX_VARYING_COMPONENTS));
+    printf("  Maximum number of output components in shader stage:\n");
+    printf("    Vertex:       %5d  GL_MAX_VERTEX_OUTPUT_COMPONENTS\n", getI(gl, GL_MAX_VERTEX_OUTPUT_COMPONENTS));
+    //printf("    Vert.->Frag.: %5d  GL_MAX_VARYING_COMPONENTS\n", getI(gl, GL_MAX_VARYING_COMPONENTS));
+    printf("    Tess. Ctrl.:  %5d  GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS\n", getI(gl, GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS));
+    printf("    Tess. Eval.:  %5d  GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS\n", getI(gl, GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS));
+    printf("    Geometry:     %5d  GL_MAX_GEOMETRY_OUTPUT_COMPONENTS\n", getI(gl, GL_MAX_GEOMETRY_OUTPUT_COMPONENTS));
+    printf("    Fragment:     %5d  4*GL_MAX_DRAW_BUFFERS\n", 4 * getI(gl, GL_MAX_DRAW_BUFFERS));
+    printf("  Maximum number of samplers in shader stage:\n");
+    printf("    Vertex:       %5d  GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS\n", getI(gl, GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS));
+    printf("    Tess. Ctrl.:  %5d  GL_MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS\n", getI(gl, GL_MAX_TESS_CONTROL_TEXTURE_IMAGE_UNITS));
+    printf("    Tess. Eval.:  %5d  GL_MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS\n", getI(gl, GL_MAX_TESS_EVALUATION_TEXTURE_IMAGE_UNITS));
+    printf("    Geometry:     %5d  GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS\n", getI(gl, GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS));
+    printf("    Fragment:     %5d  GL_MAX_TEXTURE_IMAGE_UNITS\n", getI(gl, GL_MAX_TEXTURE_IMAGE_UNITS));
+    printf("    Compute:      %5d  GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS\n", getI(gl, GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS));
+    printf("    Combined:     %5d  GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS\n", getI(gl, GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS));
 
     return 0;
 }
