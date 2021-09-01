@@ -1,5 +1,6 @@
 /*
- * Copyright (C) 2017 Martin Lambers <marlam@marlam.de>
+ * Copyright (C) 2017, 2018, 2019, 2020, 2021
+ * Martin Lambers <marlam@marlam.de>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -29,6 +30,13 @@
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
 #include <QSet>
+
+#ifndef GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX
+# define GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX 0x9047
+#endif
+#ifndef TEXTURE_FREE_MEMORY_ATI
+# define TEXTURE_FREE_MEMORY_ATI 0x87FC
+#endif
 
 int getI(QOpenGLExtraFunctions* gl, GLenum p)
 {
@@ -167,6 +175,17 @@ int main(int argc, char* argv[])
     printf("SL Version: %s\n", getS(gl, GL_SHADING_LANGUAGE_VERSION));
     printf("Vendor:     %s\n", getS(gl, GL_VENDOR));
     printf("Renderer:   %s\n", getS(gl, GL_RENDERER));
+
+    /* Print memory information (may be unknown) */
+    GLint meminfo[4] = { 0, 0, 0, 0 };
+    gl->glGetIntegerv(GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX, meminfo);
+    if (meminfo[0] == 0)
+        gl->glGetIntegerv(TEXTURE_FREE_MEMORY_ATI, meminfo);
+    gl->glGetError(); // clear error state as the above might not be supported
+    printf("Memory:     %s\n", meminfo[0] == 0 ? "unknown"
+            : meminfo[0] > 1024 * 1024 ? qPrintable(QString("%1 GiB").arg(meminfo[0] / (1024.0f * 1024.0f)))
+            : meminfo[0] > 1024        ? qPrintable(QString("%1 MiB").arg(meminfo[0] / 1024.0f))
+            :                            qPrintable(QString("%1 KiB").arg(meminfo[0])));
 
     /* Print extensions */
     if (parser.isSet("extensions")) {
