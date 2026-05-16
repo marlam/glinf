@@ -94,7 +94,8 @@ int main(int argc, char* argv[])
     int tryMinorMin = 2;
     if (parser.isSet("version")) {
         QStringList majorminor = parser.value("version").split('.');
-        unsigned int major, minor;
+        unsigned int major = 0;
+        unsigned int minor = 0;
         bool majorOk, minorOk;
         if (majorminor.length() == 2) {
             major = majorminor[0].toUInt(&majorOk);
